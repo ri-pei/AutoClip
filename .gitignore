@@ -1,0 +1,104 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+*.dll
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+notebooks/.ipynb_checkpoints # 如果你的notebooks在子目录
+
+# IDE / Editor specific
+.idea/    # IntelliJ / PyCharm / Fleet etc.
+.vscode/  # VS Code
+*.swp
+*~
+.DS_Store # macOS
+
+# Environment variables / Secrets
+.env
+.env.*
+!.env.example # 通常会提交一个 .env.example 来展示环境变量的格式
+
+# Conda environment files (if you accidentally create them inside project dir)
+# 通常 Conda 环境在外部，但以防万一
+# autoclip/ # 如果你的环境名和目录名一样，且不小心创建在项目内
+
+# Large data files (consider Git LFS for these if they must be versioned)
+# data/*.mp4
+# data/*.csv
+# data/*.pkl
+
+source/
+output/
+
+# Conda pack archives (if you use conda-pack)
+*.tar.gz
