@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<fcpxml version="1.9">
+    <resources>
+        <format name="FFVideoFormat1080p2398" width="1920" height="1080" id="r0" frameDuration="1001/24000s"/>
+        <asset start="0/24000s" duration="172832660/24000s" name="original.mp4" id="r1" hasVideo="1" format="r0">
+            <media-rep kind="original-media" src="file://localhost/D:/Videos/beyond%20the%20time%202/original.mp4"/>
+        </asset>
+    </resources>
+    <library>
+        <event name="Timeline 1 (Resolve)">
+            <project name="Timeline 1 (Resolve)">
+                <sequence tcStart="0/24000s" duration="240000/24000s" tcFormat="NDF" format="r0">
+                    <spine>
+                        <asset-clip name="clip01" ref="r1" offset="0/24000s" duration="168168/24000s" start="169170001/24000s" tcFormat="NDF" format="r0" enabled="1">
+                            <adjust-transform scale="1 1" anchor="0 0" position="0 0"/>
+                        </asset-clip>
+                        <asset-clip name="clip02" ref="r1" offset="168168/24000s" duration="96096/24000s" start="72217145/24000s" tcFormat="NDF" format="r0" enabled="1">
+                            <adjust-transform scale="1 1" anchor="0 0" position="0 0"/>
+                        </asset-clip>
+                        <asset-clip name="clip03" ref="r1" offset="264264/24000s" duration="40040/24000s" start="20264244/24000s" tcFormat="NDF" format="r0" enabled="1">
+                            <adjust-transform scale="1 1" anchor="0 0" position="0 0"/>
+                        </asset-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+    </library>
+</fcpxml>

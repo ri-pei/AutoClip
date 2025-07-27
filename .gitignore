@@ -96,6 +96,8 @@ notebooks/.ipynb_checkpoints # 如果你的notebooks在子目录
 # data/*.mp4
 # data/*.csv
 # data/*.pkl
+*.mp4
+*.png
 
 source/
 output/
