@@ -104,3 +104,4 @@ output/
 
 # Conda pack archives (if you use conda-pack)
 *.tar.gz
+.DS_Store

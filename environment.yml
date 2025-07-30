@@ -101,7 +101,6 @@ dependencies:
   - pixman=0.46.0=h2f9eb0b_0
   - pugixml=1.15=hd3d436d_0
   - py-opencv=4.11.0=headless_py313h0204b73_7
-  - python=3.13.3=h81fe080_101_cp313
   - python-dateutil=2.9.0.post0=pyhff2d567_1
   - python-tzdata=2025.2=pyhd8ed1ab_0
   - python_abi=3.13=7_cp313
@@ -119,4 +118,21 @@ dependencies:
   - x264=1!164.3095=h57fd34a_2
   - x265=3.5=hbc6ce65_3
   - zstd=1.5.7=h6491c7d_2
+  - pip:
+      - click==8.2.1
+      - imagehash==4.3.2
+      - joblib==1.5.1
+      - mccabe==0.7.0
+      - mypy-extensions==1.1.0
+      - packaging==25.0
+      - pathspec==0.12.1
+      - pillow==11.3.0
+      - platformdirs==4.3.8
+      - pycodestyle==2.14.0
+      - pyflakes==3.4.0
+      - pywavelets==1.8.0
+      - scikit-learn==1.7.1
+      - scipy==1.16.0
+      - threadpoolctl==3.6.0
+      - tqdm==4.67.1
 prefix: /Users/pei/miniconda3/envs/autoclip
