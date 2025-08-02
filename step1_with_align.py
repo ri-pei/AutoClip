@@ -1,202 +1,37 @@
 import os
-import subprocess
-import cv2  # OpenCV for image processing and transform estimation
-import numpy as np  # For numerical operations with OpenCV
 import glob
 import shutil
-import json
-
-# --- 用户核心配置参数 ---
-WORKING_DIR = "."
-EDITED_VIDEO_FILENAME = "my_edited_clip.mp4"  # 您的剪辑后视频文件名
-MASK_RECT = (
-    1085,
-    36,
-    1819 - 1085,
-    152 - 36,
-)  # (x,y,w,h) e.g. (0, 1080-80, 1920, 80) or None
-
-# --- 用户提供的参考帧路径 ---
-# 用户必须提供这两个文件！它们应该是PNG格式的单帧图像。
-# 内容必须是同一时刻的，用于计算变换。
-REF_ORIGINAL_FRAME_PATH = "ref_original.png"
-REF_EDITED_FRAME_PATH = "ref_edited.png"
-
-# --- 新增：可选的用户提供的LUT文件路径 ---
-# 如果用户有一个.cube文件用于颜色校正，请指定路径，否则设为None
-USER_COLOR_LUT_PATH = None  # 例如: "my_color_correction.cube"
-# --- END 用户核心配置参数 ---
+import cv2  # OpenCV for image processing and transform estimation
+import numpy as np  # For numerical operations with OpenCV
+from config import (
+    EDITED_VIDEO_FILENAME,
+    SOURCE_VIDEO_FOLDER,
+    REF_ORIGINAL_FRAME_PATH,
+    REF_EDITED_FRAME_PATH,
+    MASK_RECT,
+)
+from common import (
+    get_video_metadata,
+    run_command,
+    format_timestamp_from_seconds,
+    get_frame_timestamps_map_json,
+    ABS_WORKING_DIR,
+    ABS_EDITED_VIDEO_PATH,
+    ABS_OUTPUT_DIR,
+    ABS_SOURCE_VIDEO_FOLDER,
+    ABS_REF_ORIGINAL_FRAME_PATH,
+    ABS_REF_EDITED_FRAME_PATH,
+    ABS_USER_COLOR_LUT_PATH,
+)
 
 
 # --- 内部常量 ---
-BASE_OUTPUT_DIR_NAME = "output"
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".avi", ".webm", ".flv")
 MIN_MATCH_COUNT_GEO = 10  # SIFT/ORB匹配的最小特征点数
 # --- END 内部常量 ---
 
 # 全局变量存储计算出的变换参数
 GEOMETRIC_TRANSFORM_PARAMS = None  # Calculated once
-
-
-def run_command(command_list):
-    """
-    执行外部命令并返回结果，包括进程对象以便检查return code
-    """
-    try:
-        # Uncomment for debugging ffmpeg commands
-        # print(f"DEBUG CMD: {' '.join(command_list)}")
-        process = subprocess.Popen(
-            command_list,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        stdout, stderr = process.communicate()
-        # Rreturn the process object as well, so the caller can check process.returncode
-        return stdout, stderr, process
-    except FileNotFoundError:
-        print(
-            f"Error: Command {command_list[0]} not found. "
-            "Please ensure it is installed and available in your PATH."
-        )
-        raise
-    except Exception as e:
-        print(
-            f"An unexpected error occurred with command {' '.join(command_list)}: {e}"
-        )
-        raise
-
-
-def get_video_metadata(video_path):
-    """获取视频的元数据，包括宽度、高度和平均帧率"""
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=width,height,avg_frame_rate",
-        "-of",
-        "json",
-        video_path,
-    ]
-    stdout, _, process = run_command(cmd)
-
-    if process.returncode != 0 and not stdout:
-        # If error and no stdout, likely critical
-        print(
-            f"ffprobe failed to get metadata for {os.path.basename(video_path)} "
-            f"(return code {process.returncode})"
-        )
-        return None
-
-    if stdout:
-        try:
-            data = json.loads(stdout)
-            if not data.get("streams"):
-                print(
-                    f"Warning: ffprobe returned no streams for metadata of "
-                    f"{os.path.basename(video_path)}. Output: {stdout[:200]}"
-                )
-                return None
-            metadata = data["streams"][0]
-            if (
-                isinstance(metadata.get("avg_frame_rate"), str)
-                and "/" in metadata["avg_frame_rate"]
-            ):
-                num, den = map(int, metadata["avg_frame_rate"].split("/"))
-                metadata["avg_frame_rate"] = num / den if den != 0 else 0
-            else:
-                metadata["avg_frame_rate"] = float(metadata.get("avg_frame_rate", 0))
-            return metadata
-        except (json.JSONDecodeError, IndexError, KeyError) as e:
-            print(
-                f"Error parsing ffprobe JSON for metadata of "
-                f"{os.path.basename(video_path)}: {e}. "
-                f"Output: {stdout[:200]}"
-            )
-            return None
-    return None
-
-
-def get_frame_timestamps_map_json(video_path):
-    """获取视频帧的时间戳映射，返回一个字典，键为帧索引，值为对应的时间戳（秒）。
-    使用ffprobe获取视频帧的时间戳信息，解析JSON格式的输出"""
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_frames",
-        "-show_entries",
-        "frame=best_effort_timestamp_time,pts_time,media_type",
-        "-of",
-        "json",
-        video_path,
-    ]
-    stdout, _, process = run_command(cmd)
-    if process.returncode != 0 and not stdout:
-        print(
-            f"ffprobe failed to get timestamps for {os.path.basename(video_path)} "
-            f"(return code {process.returncode})"
-        )
-        return {}
-
-    timestamps_map = {}
-    if not stdout:
-        print(
-            f"  Could not get frame timestamps (stdout empty) for "
-            f"{os.path.basename(video_path)}"
-        )
-        return {}
-    try:
-        data = json.loads(stdout)
-        frames_data = data.get("frames", [])
-        parsed_count = 0
-        for frame_index, frame_info in enumerate(frames_data):
-            if frame_info.get("media_type") == "video":
-                ts_str = frame_info.get(
-                    "best_effort_timestamp_time", frame_info.get("pts_time")
-                )
-                if ts_str is not None:
-                    try:
-                        timestamps_map[frame_index] = float(ts_str)
-                        parsed_count += 1
-                    except (ValueError, TypeError):
-                        pass
-        # if parsed_count == 0 and len(frames_data) > 0:
-        # print(
-        #     f"  Warning: No timestamps parsed for {os.path.basename(video_path)} "
-        #     f"from {len(frames_data)} ffprobe entries."
-        # )
-    except json.JSONDecodeError as e:
-        print(
-            f"  Error decoding ffprobe JSON for timestamps of "
-            f"{os.path.basename(video_path)}: {e}. Output: {stdout[:200]}"
-        )
-        return {}
-    except Exception as e:  # Catch any other unexpected error
-        print(
-            f"  Unexpected error processing ffprobe JSON for "
-            f"{os.path.basename(video_path)}: {e}"
-        )
-        return {}
-    return timestamps_map
-
-
-def format_timestamp_from_seconds(ts_seconds):
-    # 将秒数格式化为 HH-MM-SS-SSS 格式的时间戳字符串
-    if ts_seconds < 0:
-        ts_seconds = 0
-    hours = int(ts_seconds / 3600)
-    minutes = int((ts_seconds % 3600) / 60)
-    seconds = int(ts_seconds % 60)
-    milliseconds = int((ts_seconds - int(ts_seconds)) * 1000)
-    return f"{hours:02d}-{minutes:02d}-{seconds:02d}-{milliseconds:03d}"
 
 
 def estimate_geometric_transform_from_refs(ref_original_path, ref_edited_path):
@@ -362,7 +197,6 @@ def estimate_geometric_transform_from_refs(ref_original_path, ref_edited_path):
     # The ffmpeg crop filter takes: crop=width:height:x:y
     # The ffmpeg scale filter will then scale this cropped region to the dimensions
     # of the edited video. (which is h_edit, w_edit)
-
     transform_params = {
         "crop_w": crop_w,
         "crop_h": crop_h,
@@ -385,11 +219,10 @@ def process_video_for_frames(
     video_name_no_ext,
     main_output_folder,
     is_edited_video_flag,
-    final_output_resolution,  # This is the resolution of the EDITED_VIDEO
+    final_output_resolution,
     mask_rect_config,
-    geom_transform_to_apply,  # Dict from estimate_geometric_transform_from_refs
-    color_lut_to_apply,  # Path to .cube LUT file or None
-    # ref_frame_for_histmatch # Path to ref edited frame (complex to use directly)
+    geom_transform_to_apply,
+    color_lut_to_apply,
 ):
     """
     处理视频以提取帧，并应用必要的几何变换、颜色校正和遮罩。
@@ -586,32 +419,52 @@ def main_step1():
     主函数，执行步骤1：提取帧并应用必要的几何变换和颜色校正。
     处理所有视频文件，使用用户指定的编辑后视频作为参考。
     """
+
+    print("开始步骤1: 提取帧和准备(包含变换估计)...")
+    # 打印预处理后的路径以供用户确认
+    print(f"工作目录: {ABS_WORKING_DIR}")
+    print(f"源视频文件夹: {ABS_SOURCE_VIDEO_FOLDER or '未设置'}")
+    print(f"输出目录: {ABS_OUTPUT_DIR}")
+    print("-" * 30)
+    print(f"编辑后的视频文件: {ABS_EDITED_VIDEO_PATH}")
+    if MASK_RECT:
+        print(f"遮罩矩形配置: {MASK_RECT}")
+    else:
+        print("遮罩矩形: 未设置.")
+
+    print(f"参考-原始帧: {ABS_REF_ORIGINAL_FRAME_PATH or '未设置'}")
+    print(f"参考-编辑后帧: {ABS_REF_EDITED_FRAME_PATH or '未设置'}")
+    if ABS_USER_COLOR_LUT_PATH:
+        print(f"用户颜色LUT文件: {ABS_USER_COLOR_LUT_PATH}")
+    else:
+        print("用户颜色LUT文件: 未设置.")
+    print("-" * 30)
+
     global GEOMETRIC_TRANSFORM_PARAMS  # Use the global variable
 
-    abs_working_dir = os.path.abspath(WORKING_DIR)
-    abs_main_output_dir = os.path.join(abs_working_dir, BASE_OUTPUT_DIR_NAME)
-    os.makedirs(abs_main_output_dir, exist_ok=True)
+    # 输出目录已在预处理部分解析，此处确保它存在
+    os.makedirs(ABS_OUTPUT_DIR, exist_ok=True)
 
-    edited_video_path = os.path.join(abs_working_dir, EDITED_VIDEO_FILENAME)
-    if not os.path.exists(edited_video_path):
+    # 检查必须的编辑后视频文件是否存在
+    if not ABS_EDITED_VIDEO_PATH or not os.path.exists(ABS_EDITED_VIDEO_PATH):
         print(
-            f"FATAL: Edited video '{EDITED_VIDEO_FILENAME}' "
-            f"not found in '{abs_working_dir}'."
+            f"致命错误: 编辑后的视频 '{EDITED_VIDEO_FILENAME}' "
+            f"在解析的路径 '{ABS_EDITED_VIDEO_PATH}' 未找到。"
         )
         return
 
     print(
-        f"Processing edited video: {EDITED_VIDEO_FILENAME} "
-        "to determine final output resolution..."
+        f"正在处理编辑后的视频: {os.path.basename(ABS_EDITED_VIDEO_PATH)} "
+        "以确定最终输出分辨率..."
     )
-    edited_metadata = get_video_metadata(edited_video_path)
+    edited_metadata = get_video_metadata(ABS_EDITED_VIDEO_PATH)
     if (
         not edited_metadata
         or "width" not in edited_metadata
         or "height" not in edited_metadata
     ):
         print(
-            f"FATAL: Could not get metadata for edited video '{EDITED_VIDEO_FILENAME}'."
+            f"致命错误: 无法获取编辑后视频 '{os.path.basename(ABS_EDITED_VIDEO_PATH)}' 的元数据。"
         )
         return
 
@@ -620,82 +473,100 @@ def main_step1():
         "height": edited_metadata["height"],
     }
     print(
-        f"Final output resolution (from edited video): "
+        f"最终输出分辨率 (来自编辑后视频): "
         f"{final_output_resolution['width']}x{final_output_resolution['height']}"
     )
 
     # --- 估算几何变换（仅执行一次）---
-    abs_ref_orig_path = os.path.join(abs_working_dir, REF_ORIGINAL_FRAME_PATH)
-    abs_ref_edit_path = os.path.join(abs_working_dir, REF_EDITED_FRAME_PATH)
-
-    if not (os.path.exists(abs_ref_orig_path) and os.path.exists(abs_ref_edit_path)):
-        print("WARNING: Reference frame(s) for geometric transform not found:")
-        if not os.path.exists(abs_ref_orig_path):
-            print(f"  Missing: {abs_ref_orig_path}")
-        if not os.path.exists(abs_ref_edit_path):
-            print(f"  Missing: {abs_ref_edit_path}")
-        print("  Geometric transforms (crop/scale for originals) will be skipped.")
+    # 路径已被预处理为绝对路径
+    if not (
+        ABS_REF_ORIGINAL_FRAME_PATH
+        and os.path.exists(ABS_REF_ORIGINAL_FRAME_PATH)
+        and ABS_REF_EDITED_FRAME_PATH
+        and os.path.exists(ABS_REF_EDITED_FRAME_PATH)
+    ):
+        print("警告: 用于几何变换的参考帧未找到:")
+        if not ABS_REF_ORIGINAL_FRAME_PATH or not os.path.exists(
+            ABS_REF_ORIGINAL_FRAME_PATH
+        ):
+            print(
+                f"  缺失: {ABS_REF_ORIGINAL_FRAME_PATH} (来自设置: {REF_ORIGINAL_FRAME_PATH})"
+            )
+        if not ABS_REF_EDITED_FRAME_PATH or not os.path.exists(
+            ABS_REF_EDITED_FRAME_PATH
+        ):
+            print(
+                f"  缺失: {ABS_REF_EDITED_FRAME_PATH} (来自设置: {REF_EDITED_FRAME_PATH})"
+            )
+        print("  将跳过对源素材的几何变换（裁切/缩放）。")
         GEOMETRIC_TRANSFORM_PARAMS = None
     else:
         GEOMETRIC_TRANSFORM_PARAMS = estimate_geometric_transform_from_refs(
-            abs_ref_orig_path, abs_ref_edit_path
+            ABS_REF_ORIGINAL_FRAME_PATH, ABS_REF_EDITED_FRAME_PATH
         )
         if not GEOMETRIC_TRANSFORM_PARAMS:
-            print(
-                "  Geometric transform estimation failed. "
-                "Originals will not be specifically cropped/scaled."
-            )
+            print("  几何变换估算失败，将不会对源素材进行特定的裁切/缩放。")
 
     # --- 检查用户提供的颜色LUT文件 ---
-    abs_user_color_lut_path = None
-    if USER_COLOR_LUT_PATH:
-        abs_user_color_lut_path = os.path.join(abs_working_dir, USER_COLOR_LUT_PATH)
-        if not os.path.exists(abs_user_color_lut_path):
-            print(
-                f"WARNING: User specified color LUT file not found: "
-                f"{abs_user_color_lut_path}"
-            )
-            print("  Color LUT application will be skipped.")
-            abs_user_color_lut_path = None
+    # 路径已被预处理为绝对路径，只需检查文件是否存在
+    final_color_lut_path = None
+    if ABS_USER_COLOR_LUT_PATH:
+        if os.path.exists(ABS_USER_COLOR_LUT_PATH):
+            print(f"  将使用颜色校正LUT文件: {ABS_USER_COLOR_LUT_PATH}")
+            final_color_lut_path = ABS_USER_COLOR_LUT_PATH
         else:
-            print(f"  Will use color LUT: {abs_user_color_lut_path}")
+            print(f"警告: 用户指定的颜色LUT文件未找到: " f"{ABS_USER_COLOR_LUT_PATH}")
+            print("  将跳过颜色LUT的应用。")
 
-    # --- 查找所有视频文件 ---
-    all_video_files_in_dir = []
-    for ext in VIDEO_EXTENSIONS:
-        all_video_files_in_dir.extend(
-            glob.glob(os.path.join(abs_working_dir, f"*{ext.lower()}"))
-        )
-        all_video_files_in_dir.extend(
-            glob.glob(os.path.join(abs_working_dir, f"*{ext.upper()}"))
-        )
-    all_video_files_in_dir = sorted(
-        list(set(p for p in all_video_files_in_dir if os.path.isfile(p)))
-    )
+    # --- 查找所有要处理的视频文件 (已修正逻辑) ---
+    source_video_files = []
+    if ABS_SOURCE_VIDEO_FOLDER and os.path.isdir(ABS_SOURCE_VIDEO_FOLDER):
+        print(f"\n正在源视频文件夹中搜索视频: {ABS_SOURCE_VIDEO_FOLDER}")
+        for ext in VIDEO_EXTENSIONS:
+            # 使用 recursive=True 在子文件夹中查找
+            pattern = os.path.join(ABS_SOURCE_VIDEO_FOLDER, "**", f"*{ext.lower()}")
+            source_video_files.extend(glob.glob(pattern, recursive=True))
+            # 兼容大写扩展名
+            pattern_upper = os.path.join(
+                ABS_SOURCE_VIDEO_FOLDER, "**", f"*{ext.upper()}"
+            )
+            source_video_files.extend(glob.glob(pattern_upper, recursive=True))
+    elif SOURCE_VIDEO_FOLDER:
+        print(f"警告: 源视频文件夹 '{SOURCE_VIDEO_FOLDER}' 未找到或不是一个目录。")
 
-    if not all_video_files_in_dir:
-        print(f"No video files found in '{abs_working_dir}'.")
+    # 最终处理列表 = 编辑后的视频 + 所有源视频 (去重)
+    all_videos_to_process = {os.path.normpath(ABS_EDITED_VIDEO_PATH)}
+    all_videos_to_process.update([os.path.normpath(p) for p in source_video_files])
+
+    # 转换为排序后的列表以保证处理顺序一致
+    sorted_videos_list = sorted(list(all_videos_to_process))
+
+    if not sorted_videos_list:
+        print("No video files found.")
         return
 
-    print(f"\nFound {len(all_video_files_in_dir)} video(s) to process.")
+    print(f"\n总共找到 {len(sorted_videos_list)} 个视频文件进行处理。")
 
-    for video_full_path in all_video_files_in_dir:
+    for video_full_path in sorted_videos_list:
         video_file_name_with_ext = os.path.basename(video_full_path)
         video_name_no_ext, _ = os.path.splitext(video_file_name_with_ext)
 
-        print(f"\n--- Processing: {video_file_name_with_ext} ---")
-        is_edited = video_full_path == edited_video_path
+        print(f"\n--- 正在处理: {video_file_name_with_ext} ---")
+        # 使用 os.path.normpath 确保跨平台路径比较的可靠性
+        is_edited = os.path.normpath(video_full_path) == os.path.normpath(
+            ABS_EDITED_VIDEO_PATH
+        )
 
         current_geom_transform = None
         current_color_lut = None
-        if not is_edited:  # Apply special transforms only to original素材
+        if not is_edited:  # 仅对源素材应用特殊变换
             current_geom_transform = GEOMETRIC_TRANSFORM_PARAMS
-            current_color_lut = abs_user_color_lut_path
+            current_color_lut = final_color_lut_path
 
         process_video_for_frames(
             video_path=video_full_path,
             video_name_no_ext=video_name_no_ext,
-            main_output_folder=abs_main_output_dir,
+            main_output_folder=ABS_OUTPUT_DIR,
             is_edited_video_flag=is_edited,
             final_output_resolution=final_output_resolution,
             mask_rect_config=MASK_RECT,
@@ -703,26 +574,11 @@ def main_step1():
             color_lut_to_apply=current_color_lut,
         )
 
-    print("\n\nStep 1 (Frame Extraction and Preparation with Transforms) completed.")
-    print(f"All frame outputs should be in subdirectories under: {abs_main_output_dir}")
+    print("\n\n步骤 1 (帧提取与变换) 已完成。")
+    print(f"所有输出的帧位于以下目录的子文件夹中: {ABS_OUTPUT_DIR}")
 
 
 if __name__ == "__main__":
-    print("开始步骤1: 提取帧和准备(包含变换估计)...")
-    print(f"Working directory: {os.path.abspath(WORKING_DIR)}")
-    print(f"Edited video file: {EDITED_VIDEO_FILENAME}")
-    if MASK_RECT:
-        print(f"Mask rectangle config: {MASK_RECT}")
-    else:
-        print("Mask rectangle: Not set.")
-
-    print(f"Reference original frame for transforms: {REF_ORIGINAL_FRAME_PATH}")
-    print(f"Reference edited frame for transforms  : {REF_EDITED_FRAME_PATH}")
-    if USER_COLOR_LUT_PATH:
-        print(f"User color LUT file: {USER_COLOR_LUT_PATH}")
-    else:
-        print("User color LUT file: Not set.")
-    print("-" * 30)
 
     try:
         # Ensure OpenCV Contrib is installed if SIFT is desired.
@@ -733,16 +589,16 @@ if __name__ == "__main__":
             print(
                 "--------------------------------------------------------------------"
             )
-            print("FFMPEG/FFPROBE NOT FOUND. Please ensure they are installed and")
-            print("added to your system's PATH environment variable.")
-            print("Download from: https://ffmpeg.org/download.html")
+            print("错误: FFMPEG/FFPROBE 未找到。请确保已安装它们，")
+            print("并将其添加至系统的 PATH 环境变量。")
+            print("下载地址: https://ffmpeg.org/download.html")
             print(
                 "--------------------------------------------------------------------"
             )
         else:
             print(f"A FileNotFoundError occurred: {e}")  # Other file not found
     except Exception as e:
-        print(f"A critical error occurred during Step 1 execution: {e}")
+        print(f"在步骤1执行期间发生严重错误: {e}")
         import traceback
 
         traceback.print_exc()
