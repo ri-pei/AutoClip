@@ -1,65 +1,30 @@
 import os
 import glob
-import re
+import imagehash
+import cv2
 import pandas as pd
 from PIL import Image
-import imagehash  # pip install imagehash Pillow
-import cv2  # pip install opencv-python
 from tqdm import tqdm
 
-# --- Configuration ---
-CWD = os.getcwd()
-OUTPUT_DIR_NAME = "output"
-OUTPUT_PATH = os.path.join(CWD, OUTPUT_DIR_NAME)
-
-# --- Helper Functions ---
-
-
-def parse_frame_filename(filename):
-    """
-    Parses the frame filename to extract video name prefix, frame number, and time string.
-    Example: <video_filename_no_ext>_frame_0000000_time_HH-MM-SS-mmm.png
-    Returns: (video_prefix, frame_number, time_str) or (None, None, None) if no match.
-    """
-    # Regex to capture:
-    # 1. Video name prefix (anything before _frame_)
-    # 2. Frame number (digits)
-    # 3. Time string (HH-MM-SS-mmm)
-    match = re.match(r"(.+)_frame_(\d+)_time_(\d{2}-\d{2}-\d{2}-\d{3})\.png", filename)
-    if match:
-        video_prefix = match.group(1)
-        frame_number = int(match.group(2))
-        time_str = match.group(3)  # HH-MM-SS-mmm
-        return video_prefix, frame_number, time_str
-    return None, None, None
-
-
-def time_str_to_milliseconds(time_str):
-    """
-    Converts HH-MM-SS-mmm time string to total milliseconds.
-    """
-    if not time_str:
-        return 0
-    parts = time_str.split("-")
-    if len(parts) == 4:
-        h, m, s, ms = map(int, parts)
-        return (h * 3600 + m * 60 + s) * 1000 + ms
-    return 0
+from common import parse_frame_filename, time_str_to_milliseconds
+from common import ABS_OUTPUT_DIR
 
 
 def calculate_phash_for_video(video_name_no_ext):
     """
-    Calculates pHash for all frames of a given video and saves to a CSV.
-    Implements caching to skip if CSV already exists and is valid.
+    为指定视频的所有帧计算pHash并保存到CSV文件。
+    实现缓存机制，如果CSV已存在且有效则跳过处理。
     """
-    frames_dir = os.path.join(OUTPUT_PATH, video_name_no_ext, "frames")
+    # 使用从 common.py 导入的绝对路径
+    frames_dir = os.path.join(ABS_OUTPUT_DIR, video_name_no_ext, "frames")
     csv_cache_path = os.path.join(
-        OUTPUT_PATH, video_name_no_ext, f"{video_name_no_ext}_phash.csv"
+        ABS_OUTPUT_DIR, video_name_no_ext, f"{video_name_no_ext}_phash.csv"
     )
 
     if not os.path.exists(frames_dir):
         print(
-            f"Frames directory not found for {video_name_no_ext} at {frames_dir}. Skipping."
+            f"Frames directory not found for {video_name_no_ext} at "
+            f"{frames_dir}. Skipping."
         )
         return
 
@@ -82,12 +47,14 @@ def calculate_phash_for_video(video_name_no_ext):
                 and len(df_cache) == actual_frame_count
             ):
                 print(
-                    f"Valid pHash cache found for {video_name_no_ext} with {len(df_cache)} frames. Skipping."
+                    f"Valid pHash cache found for {video_name_no_ext} with "
+                    f"{len(df_cache)} frames. Skipping."
                 )
                 return
             else:
                 print(
-                    f"Invalid or incomplete pHash cache for {video_name_no_ext}. Regenerating..."
+                    f"Invalid or incomplete pHash cache for "
+                    f"{video_name_no_ext}. Regenerating..."
                 )
         except pd.errors.EmptyDataError:
             print(f"Empty pHash cache file for {video_name_no_ext}. Regenerating...")
@@ -126,18 +93,19 @@ def calculate_phash_for_video(video_name_no_ext):
             hash_val = imagehash.phash(img_pil, hash_size=16)
 
             timestamp_ms = time_str_to_milliseconds(time_str)
-            relative_image_path = os.path.relpath(full_image_path, CWD)
+
+            # replace("\\", "/") 确保路径在不同操作系统中的一致性
+            absolute_image_path = full_image_path.replace("\\", "/")
 
             frame_data_list.append(
                 {
-                    "video_name": video_name_no_ext,  # Use the directory name as the definitive video name
+                    # Use the directory name as the definitive video name
+                    "video_name": video_name_no_ext,
                     "image_filename": image_filename,
                     "frame_number": frame_num,
                     "timestamp_ms": timestamp_ms,
                     "phash": str(hash_val),
-                    "image_path": relative_image_path.replace(
-                        "\\", "/"
-                    ),  # Ensure forward slashes for consistency
+                    "image_path": absolute_image_path,
                 }
             )
 
@@ -164,23 +132,25 @@ def main_step2():
     """
     print("--- Running Step 2: Calculate and Cache pHash for Frames ---")
 
-    if not os.path.exists(OUTPUT_PATH):
+    # 使用从 common.py 导入的路径进行检查
+    if not os.path.exists(ABS_OUTPUT_DIR):
         print(
-            f"Error: Output directory '{OUTPUT_PATH}' not found. Please run Step 1 first."
+            f"Error: Output directory '{ABS_OUTPUT_DIR}' not found. "
+            "Please run Step 1 first."
         )
         return
 
-    # Identify video subdirectories in the output path
-    # These subdirectories are named after the video files (without extension)
+    # 在配置好的输出目录中查找视频子目录
     video_subdirs = [
         d
-        for d in os.listdir(OUTPUT_PATH)
-        if os.path.isdir(os.path.join(OUTPUT_PATH, d))
+        for d in os.listdir(ABS_OUTPUT_DIR)
+        if os.path.isdir(os.path.join(ABS_OUTPUT_DIR, d))
     ]
 
     if not video_subdirs:
         print(
-            f"No video-specific subdirectories found in '{OUTPUT_PATH}'. Ensure Step 1 completed correctly."
+            f"No video-specific subdirectories found in '{ABS_OUTPUT_DIR}'. "
+            "Ensure Step 1 completed correctly."
         )
         return
 
@@ -196,17 +166,24 @@ if __name__ == "__main__":
     # --- Run Step 2 ---
     main_step2()
 
-    # --- Example of how to re-run to test caching ---
-    print("\n--- Re-running Step 2 to test caching ---")
-    main_step2()
+    # --- 示例：重新运行以测试缓存 ---
+    # print("\n--- Re-running Step 2 to test caching ---")
+    # main_step2()
 
-    # --- Example of how to invalidate a cache (e.g., by deleting one frame or the CSV) ---
+    # --- Example of how to invalidate a cache (by deleting one frame or the CSV) ---
     # print("\n--- Testing cache invalidation ---")
     # test_invalidate_video = "original_video1"
-    # test_csv_path = os.path.join(OUTPUT_PATH, test_invalidate_video, f"{test_invalidate_video}_phash.csv")
+    # test_csv_path = os.path.join(
+    #     OUTPUT_PATH,
+    #     test_invalidate_video,
+    #     f"{test_invalidate_video}_phash.csv",
+    # )
     # if os.path.exists(test_csv_path):
     #     os.remove(test_csv_path)
     #     print(f"Deleted cache file: {test_csv_path} for testing invalidation.")
     #     main_step2()
     # else:
-    #     print(f"Cache file {test_csv_path} not found, couldn't test invalidation by deletion.")
+    #     print(
+    #         f"Cache file {test_csv_path} not found, "
+    #         "Couldn't test invalidation by deletion."
+    #     )
