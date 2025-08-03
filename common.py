@@ -1,13 +1,15 @@
 import os
 import sys
 import json
+import re
 import shutil
 import subprocess
+import cv2
 import config
 
 
 # ==============================================================================
-# 2. 全局设置与路径解析 (原 settings.py 的内容)
+# 1. 全局设置与路径解析
 # ==============================================================================
 
 ABS_WORKING_DIR = os.path.abspath(config.WORKING_DIR or ".")
@@ -34,7 +36,7 @@ ABS_USER_COLOR_LUT_PATH = _resolve_path(config.USER_COLOR_LUT_PATH)
 
 
 # ==============================================================================
-# 3. 启动时环境检查 (原 settings.py 的内容)
+# 2. 启动时环境检查
 # ==============================================================================
 
 
@@ -64,7 +66,7 @@ print("依赖检查通过。")
 
 
 # ==============================================================================
-# 1. 通用辅助函数 (原 utils.py 的内容)
+# 3. 通用辅助函数
 # ==============================================================================
 def run_command(command_list):
     """
@@ -226,3 +228,80 @@ def format_timestamp_from_seconds(ts_seconds):
     seconds = int(ts_seconds % 60)
     milliseconds = int((ts_seconds - int(ts_seconds)) * 1000)
     return f"{hours:02d}-{minutes:02d}-{seconds:02d}-{milliseconds:03d}"
+
+
+def parse_frame_filename(filename):
+    """
+    解析帧文件名以提取视频名称前缀、帧编号和时间字符串。
+    示例: <video_filename_no_ext>_frame_0000000_time_HH-MM-SS-mmm.png
+    返回: (video_prefix, frame_number, time_str) 或 (None, None, None) 如果没有匹配。
+    """
+    # Regex to capture:
+    # 1. Video name prefix (anything before _frame_)
+    # 2. Frame number (digits)
+    # 3. Time string (HH-MM-SS-mmm)
+    match = re.match(r"(.+)_frame_(\d+)_time_(\d{2}-\d{2}-\d{2}-\d{3})\.png", filename)
+    if match:
+        video_prefix = match.group(1)
+        frame_number = int(match.group(2))
+        time_str = match.group(3)  # HH-MM-SS-mmm
+        return video_prefix, frame_number, time_str
+    return None, None, None
+
+
+def time_str_to_milliseconds(time_str):
+    """
+    Converts HH-MM-SS-mmm time string to total milliseconds.
+    """
+    if not time_str:
+        return 0
+    parts = time_str.split("-")
+    if len(parts) == 4:
+        h, m, s, ms = map(int, parts)
+        return (h * 3600 + m * 60 + s) * 1000 + ms
+    return 0
+
+
+def stitch_images_vertically(img_path1, img_path2, output_path):
+    """
+    Reads two images, stitches them vertically (img1 on top of img2),
+    and saves the result. Paths are assumed to be absolute or resolvable.
+    """
+    try:
+        img1 = cv2.imread(img_path1)
+        img2 = cv2.imread(img_path2)
+
+        if img1 is None:
+            print(f"Warning: Could not read image for stitching: {img_path1}")
+            return False
+        if img2 is None:
+            print(f"Warning: Could not read image for stitching: {img_path2}")
+            return False
+
+        h1, w1 = img1.shape[:2]
+        h2, w2 = img2.shape[:2]
+
+        if w1 != w2:
+            print(
+                f"Warning: Image widths differ for stitching ({w1} vs {w2}) for "
+                f"{os.path.basename(img_path1)} and {os.path.basename(img_path2)}. "
+                f"Resizing second image to width {w1}."
+            )
+            target_height_img2 = int(h2 * (w1 / w2))
+            img2_resized = cv2.resize(
+                img2, (w1, target_height_img2), interpolation=cv2.INTER_AREA
+            )
+            stitched_image = cv2.vconcat([img1, img2_resized])
+        else:
+            stitched_image = cv2.vconcat([img1, img2])
+
+        cv2.imwrite(output_path, stitched_image)
+        return True
+    except Exception as e:
+        print(
+            f"Error stitching images: {e}"
+            f"   {os.path.basename(img_path1)}"
+            f"    and"
+            f"   {os.path.basename(img_path2)}"
+        )
+        return False

@@ -28,10 +28,8 @@ from common import (
 # --- 内部常量 ---
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".avi", ".webm", ".flv")
 MIN_MATCH_COUNT_GEO = 10  # SIFT/ORB匹配的最小特征点数
+GEOMETRIC_TRANSFORM_PARAMS = None  # 全局变量存储计算出的变换参数
 # --- END 内部常量 ---
-
-# 全局变量存储计算出的变换参数
-GEOMETRIC_TRANSFORM_PARAMS = None  # Calculated once
 
 
 def estimate_geometric_transform_from_refs(ref_original_path, ref_edited_path):
@@ -584,19 +582,6 @@ if __name__ == "__main__":
         # Ensure OpenCV Contrib is installed if SIFT is desired.
         # `pip install opencv-python opencv-contrib-python numpy`
         main_step1()
-    except FileNotFoundError as e:  # More specific for ffmpeg/ffprobe
-        if "ffmpeg" in str(e).lower() or "ffprobe" in str(e).lower():
-            print(
-                "--------------------------------------------------------------------"
-            )
-            print("错误: FFMPEG/FFPROBE 未找到。请确保已安装它们，")
-            print("并将其添加至系统的 PATH 环境变量。")
-            print("下载地址: https://ffmpeg.org/download.html")
-            print(
-                "--------------------------------------------------------------------"
-            )
-        else:
-            print(f"A FileNotFoundError occurred: {e}")  # Other file not found
     except Exception as e:
         print(f"在步骤1执行期间发生严重错误: {e}")
         import traceback
