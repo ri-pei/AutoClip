@@ -1,0 +1,35 @@
+[paths]
+working_dir = "."
+edited_video = "edited_mv.mp4"
+source_dir = "source"
+output_dir = "output"
+
+[step1]
+frame_storage = "compact"
+# Optional preprocessing, in target-frame coordinates:
+# reference_original = "ref_original.png"
+# reference_edited = "ref_edited.png"
+# mask_rect = [0, 0, 350, 90]
+# color_lut = "correction.cube"
+
+[step3]
+matcher = "numpy"  # "faiss" is faster for large libraries; install requirements-optimized.txt
+top_k = 20
+coarse_match_csv = "coarse_match_results2.csv"
+
+[step4]
+alignment = "affine_pixels"
+frame_refinement = true
+frame_sampling = "auto"
+short_jump_review = true
+jump_max_duration_ms = 100.0
+refine_radius = 4
+review_mae = 12.0
+max_pixel_mae = 18.0
+final_segments_csv = "final_video_segments_refined.csv"
+
+[step5]
+frame_rate = 0  # Read the target video's frame rate.
+project_name = "Autoclip"
+event_name = "Autoclip"
+include_edited_audio = true

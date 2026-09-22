@@ -101,6 +101,8 @@ notebooks/.ipynb_checkpoints # 如果你的notebooks在子目录
 
 source/
 output/
+config.toml
+tests/.work/
 
 # Conda pack archives (if you use conda-pack)
 *.tar.gz

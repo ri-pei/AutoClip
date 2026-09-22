@@ -1,34 +1,14 @@
 import os
-import glob
-import shutil
 import cv2  # OpenCV for image processing and transform estimation
 import numpy as np  # For numerical operations with OpenCV
-from config import (
-    EDITED_VIDEO_FILENAME,
-    SOURCE_VIDEO_FOLDER,
-    REF_ORIGINAL_FRAME_PATH,
-    REF_EDITED_FRAME_PATH,
-    MASK_RECT,
-)
 from common import (
+    discover_source_videos,
     get_video_metadata,
-    run_command,
-    format_timestamp_from_seconds,
-    get_frame_timestamps_map_json,
-    ABS_WORKING_DIR,
-    ABS_EDITED_VIDEO_PATH,
-    ABS_OUTPUT_DIR,
-    ABS_SOURCE_VIDEO_FOLDER,
-    ABS_REF_ORIGINAL_FRAME_PATH,
-    ABS_REF_EDITED_FRAME_PATH,
-    ABS_USER_COLOR_LUT_PATH,
 )
 
 
 # --- 内部常量 ---
-VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".avi", ".webm", ".flv")
 MIN_MATCH_COUNT_GEO = 10  # SIFT/ORB匹配的最小特征点数
-GEOMETRIC_TRANSFORM_PARAMS = None  # 全局变量存储计算出的变换参数
 # --- END 内部常量 ---
 
 
@@ -119,19 +99,6 @@ def estimate_geometric_transform_from_refs(ref_original_path, ref_edited_path):
     )
     if len(good_matches) < MIN_MATCH_COUNT_GEO:
         print("    Not enough good matches to estimate transform reliably.")
-        # 如果需要调试，可以在这里绘制匹配结果
-        # img_matches = cv2.drawMatches(
-        #     img_orig, kp_orig, img_edit, kp_edit, good_matches, None,
-        #     flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
-        # )
-        # cv2.imwrite(
-        #     os.path.join(
-        #         os.path.dirname(ref_original_path),
-        #         "debug_matches.png"
-        #     ),
-        #     img_matches
-        # )
-        # print("    (已保存 debug_matches.png，可用于检查匹配效果)")
         return None
 
     src_pts = np.float32([kp_orig[m.queryIdx].pt for m in good_matches]).reshape(
@@ -234,30 +201,6 @@ def process_video_for_frames(
     color_lut_to_apply: 颜色LUT文件路径或None
     """
     video_specific_output_dir = os.path.join(main_output_folder, video_name_no_ext)
-    frames_output_dir = os.path.join(video_specific_output_dir, "frames")
-
-    if os.path.exists(frames_output_dir):
-        final_name_pattern = os.path.join(
-            frames_output_dir, f"{video_name_no_ext}_frame_*_time_*.png"
-        )
-        if glob.glob(final_name_pattern):
-            print(f"  Frames for '{video_name_no_ext}' seem to exist. Skipping.")
-            return True
-        else:
-            print(
-                f"  Frame dir '{frames_output_dir}' exists but no final files. 清理中"
-            )
-            shutil.rmtree(frames_output_dir)
-
-    os.makedirs(frames_output_dir, exist_ok=True)
-    temp_ffmpeg_output_dir = os.path.join(
-        video_specific_output_dir, "temp_ffmpeg_frames"
-    )
-    if os.path.exists(temp_ffmpeg_output_dir):
-        shutil.rmtree(temp_ffmpeg_output_dir)
-    os.makedirs(temp_ffmpeg_output_dir, exist_ok=True)
-
-    # print(f"  Processing video '{video_name_no_ext}':")
     vf_options = []
 
     # --- 1. Apply Geometric Transform (Crop and Scale) - ONLY FOR ORIGINAL VIDEOS ---
@@ -289,6 +232,16 @@ def process_video_for_frames(
                 f"{final_output_resolution['height']}"
             )
 
+    # Compact matching uses mask coordinates in the target resolution.  Without
+    # reference geometry, differently sized sources still need this normalization
+    # before drawbox; otherwise the same watermark rectangle covers another area.
+    if not is_edited_video_flag and not geom_transform_to_apply:
+        source_meta = get_video_metadata(video_path)
+        if not source_meta:
+            raise RuntimeError(f"Cannot read source dimensions: {video_path}")
+        if (source_meta["width"], source_meta["height"]) != (final_output_resolution["width"], final_output_resolution["height"]):
+            vf_options.append(f"scale={final_output_resolution['width']}:{final_output_resolution['height']}")
+
     # --- 2. Apply Color Transformation - ONLY FOR ORIGINAL VIDEOS ---
     if not is_edited_video_flag:
         if color_lut_to_apply and os.path.exists(color_lut_to_apply):
@@ -298,14 +251,6 @@ def process_video_for_frames(
                 "\\", "/"
             )  # Basic path normalization
             vf_options.append(f"lut3d=file='{lut_path_escaped}'")
-            # print(f"    Applying 3D LUT: {color_lut_to_apply}")
-            # else if ref_frame_for_histmatch:
-            # Direct histmatch is complex for ffmpeg CLI here
-            # print(
-            #     "    (Skipping histmatch for now - direct use with image ref is "
-            #     "complex in simple -vf chain)"
-            # )
-            pass
 
     # --- 3. Apply Masking (for ALL videos, after all other transforms) ---
     # The frame dimensions at this point should be `final_output_resolution`.
@@ -337,134 +282,70 @@ def process_video_for_frames(
                 )
             )
 
-    # --- Construct and Run FFmpeg Command ---
-    ffmpeg_filter_string = ",".join(vf_options)
-    temp_frame_pattern = os.path.join(temp_ffmpeg_output_dir, "ffmpeg_frame_%07d.png")
-
-    extract_cmd = ["ffmpeg", "-y", "-i", video_path, "-an", "-vsync", "vfr"]
-    if ffmpeg_filter_string:
-        extract_cmd.extend(["-vf", ffmpeg_filter_string])
-    extract_cmd.extend(["-q:v", "2", "-start_number", "0", temp_frame_pattern])
-
-    # print(f"    Running ffmpeg for '{video_name_no_ext}'...")
-    # if ffmpeg_filter_string:
-    #     filter_str = ffmpeg_filter_string[:200]
-    #     ellipsis = '...' if len(ffmpeg_filter_string) > 200 else ''
-    #     print(f"      Filter: {filter_str}{ellipsis}")
-
-    _, stderr_ffmpeg, process_ffmpeg = run_command(extract_cmd)
-
-    extracted_temp_files = sorted(
-        glob.glob(os.path.join(temp_ffmpeg_output_dir, "ffmpeg_frame_*.png"))
-    )
-
-    if process_ffmpeg.returncode != 0 or not extracted_temp_files:
-        print(
-            (
-                f"    FFmpeg failed or produced no frames for {video_name_no_ext} "
-                f"(Code: {process_ffmpeg.returncode})."
-            )
-        )
-        if stderr_ffmpeg:
-            print(
-                f"      FFmpeg STDERR:\n{stderr_ffmpeg[:1000]}\n"
-            )  # Print a good chunk of stderr
-        if os.path.exists(temp_ffmpeg_output_dir):
-            shutil.rmtree(temp_ffmpeg_output_dir)
-        return False
-    # print(f"    FFmpeg extracted {len(extracted_temp_files)} frames.")
-
-    # --- Rename frames ---
-    # print(f"    Fetching timestamps & renaming {len(extracted_temp_files)} frames...")
-    frame_ts_map = get_frame_timestamps_map_json(video_path)
-    renamed_count = 0
-    # 在这里,遍历所有提取的临时文件并重命名它们
-    # 从frame_ts_map获取每一帧的时间戳
-    # 将临时文件重命名为带有时间戳信息的最终文件名
-    for i, temp_processed_path in enumerate(extracted_temp_files):
-        timestamp_sec = frame_ts_map.get(i, 0.0)  # Default to 0.0s if TS not found
-        formatted_ts = format_timestamp_from_seconds(timestamp_sec)
-        final_frame_name = f"{video_name_no_ext}_frame_{i:07d}_time_{formatted_ts}.png"
-        final_frame_path = os.path.join(frames_output_dir, final_frame_name)
-        try:
-            os.rename(temp_processed_path, final_frame_path)
-            renamed_count += 1
-        except Exception as e:
-            print(
-                f"    Error renaming {temp_processed_path} to {final_frame_path}: {e}"
-            )
-    # print(f"    Renamed {renamed_count} frames.")
-
-    if os.path.exists(temp_ffmpeg_output_dir):
-        try:
-            if not os.listdir(temp_ffmpeg_output_dir):
-                os.rmdir(temp_ffmpeg_output_dir)
-            # else:
-            # print(f"    Warning: Temp dir '{temp_ffmpeg_output_dir}' not empty.")
-        except OSError:
-            pass  # Ignore error if dir is not empty or other issue
-
-    if renamed_count == 0 and len(extracted_temp_files) > 0:
-        print(
-            f"    WARNING: Extracted frames but NONE renamed for {video_name_no_ext}."
-        )
-        return False
-    return True
+    from compact_frames import extract_compact
+    return extract_compact(video_path, video_specific_output_dir, vf_options)
 
 
-def main_step1():
+def main_step1(settings):
     """
     主函数，执行步骤1：提取帧并应用必要的几何变换和颜色校正。
     处理所有视频文件，使用用户指定的编辑后视频作为参考。
     """
 
+    abs_working_dir = settings["working_dir"]
+    abs_edited_video_path = settings["edited_video_path"]
+    abs_output_dir = settings["output_dir"]
+    abs_source_video_folder = settings["source_dir"]
+    abs_ref_original_frame_path = settings["reference_original_path"]
+    abs_ref_edited_frame_path = settings["reference_edited_path"]
+    abs_user_color_lut_path = settings["color_lut_path"]
+    mask_rect = settings["mask_rect"]
+    edited_video_filename = os.path.basename(abs_edited_video_path)
+
     print("开始步骤1: 提取帧和准备(包含变换估计)...")
     # 打印预处理后的路径以供用户确认
-    print(f"工作目录: {ABS_WORKING_DIR}")
-    print(f"源视频文件夹: {ABS_SOURCE_VIDEO_FOLDER or '未设置'}")
-    print(f"输出目录: {ABS_OUTPUT_DIR}")
+    print(f"工作目录: {abs_working_dir}")
+    print(f"源视频文件夹: {abs_source_video_folder or '未设置'}")
+    print(f"输出目录: {abs_output_dir}")
     print("-" * 30)
-    print(f"编辑后的视频文件: {ABS_EDITED_VIDEO_PATH}")
-    if MASK_RECT:
-        print(f"遮罩矩形配置: {MASK_RECT}")
+    print(f"编辑后的视频文件: {abs_edited_video_path}")
+    if mask_rect:
+        print(f"遮罩矩形配置: {mask_rect}")
     else:
         print("遮罩矩形: 未设置.")
 
-    print(f"参考-原始帧: {ABS_REF_ORIGINAL_FRAME_PATH or '未设置'}")
-    print(f"参考-编辑后帧: {ABS_REF_EDITED_FRAME_PATH or '未设置'}")
-    if ABS_USER_COLOR_LUT_PATH:
-        print(f"用户颜色LUT文件: {ABS_USER_COLOR_LUT_PATH}")
+    print(f"参考-原始帧: {abs_ref_original_frame_path or '未设置'}")
+    print(f"参考-编辑后帧: {abs_ref_edited_frame_path or '未设置'}")
+    if abs_user_color_lut_path:
+        print(f"用户颜色LUT文件: {abs_user_color_lut_path}")
     else:
         print("用户颜色LUT文件: 未设置.")
     print("-" * 30)
 
-    global GEOMETRIC_TRANSFORM_PARAMS  # Use the global variable
 
     # 输出目录已在预处理部分解析，此处确保它存在
-    os.makedirs(ABS_OUTPUT_DIR, exist_ok=True)
+    os.makedirs(abs_output_dir, exist_ok=True)
 
     # 检查必须的编辑后视频文件是否存在
-    if not ABS_EDITED_VIDEO_PATH or not os.path.exists(ABS_EDITED_VIDEO_PATH):
-        print(
-            f"致命错误: 编辑后的视频 '{EDITED_VIDEO_FILENAME}' "
-            f"在解析的路径 '{ABS_EDITED_VIDEO_PATH}' 未找到。"
+    if not abs_edited_video_path or not os.path.exists(abs_edited_video_path):
+        raise FileNotFoundError(
+            f"编辑后的视频 '{edited_video_filename}' "
+            f"在解析的路径 '{abs_edited_video_path}' 未找到。"
         )
-        return
 
     print(
-        f"正在处理编辑后的视频: {os.path.basename(ABS_EDITED_VIDEO_PATH)} "
+        f"正在处理编辑后的视频: {os.path.basename(abs_edited_video_path)} "
         "以确定最终输出分辨率..."
     )
-    edited_metadata = get_video_metadata(ABS_EDITED_VIDEO_PATH)
+    edited_metadata = get_video_metadata(abs_edited_video_path)
     if (
         not edited_metadata
         or "width" not in edited_metadata
         or "height" not in edited_metadata
     ):
-        print(
-            f"致命错误: 无法获取编辑后视频 '{os.path.basename(ABS_EDITED_VIDEO_PATH)}' 的元数据。"
+        raise RuntimeError(
+            f"无法获取编辑后视频 '{os.path.basename(abs_edited_video_path)}' 的元数据。"
         )
-        return
 
     final_output_resolution = {
         "width": edited_metadata["width"],
@@ -478,62 +359,51 @@ def main_step1():
     # --- 估算几何变换（仅执行一次）---
     # 路径已被预处理为绝对路径
     if not (
-        ABS_REF_ORIGINAL_FRAME_PATH
-        and os.path.exists(ABS_REF_ORIGINAL_FRAME_PATH)
-        and ABS_REF_EDITED_FRAME_PATH
-        and os.path.exists(ABS_REF_EDITED_FRAME_PATH)
+        abs_ref_original_frame_path
+        and os.path.exists(abs_ref_original_frame_path)
+        and abs_ref_edited_frame_path
+        and os.path.exists(abs_ref_edited_frame_path)
     ):
         print("警告: 用于几何变换的参考帧未找到:")
-        if not ABS_REF_ORIGINAL_FRAME_PATH or not os.path.exists(
-            ABS_REF_ORIGINAL_FRAME_PATH
+        if not abs_ref_original_frame_path or not os.path.exists(
+            abs_ref_original_frame_path
         ):
             print(
-                f"  缺失: {ABS_REF_ORIGINAL_FRAME_PATH} (来自设置: {REF_ORIGINAL_FRAME_PATH})"
+                f"  缺失: {abs_ref_original_frame_path}"
             )
-        if not ABS_REF_EDITED_FRAME_PATH or not os.path.exists(
-            ABS_REF_EDITED_FRAME_PATH
+        if not abs_ref_edited_frame_path or not os.path.exists(
+            abs_ref_edited_frame_path
         ):
             print(
-                f"  缺失: {ABS_REF_EDITED_FRAME_PATH} (来自设置: {REF_EDITED_FRAME_PATH})"
+                f"  缺失: {abs_ref_edited_frame_path}"
             )
         print("  将跳过对源素材的几何变换（裁切/缩放）。")
-        GEOMETRIC_TRANSFORM_PARAMS = None
+        geometric_transform = None
     else:
-        GEOMETRIC_TRANSFORM_PARAMS = estimate_geometric_transform_from_refs(
-            ABS_REF_ORIGINAL_FRAME_PATH, ABS_REF_EDITED_FRAME_PATH
+        geometric_transform = estimate_geometric_transform_from_refs(
+            abs_ref_original_frame_path, abs_ref_edited_frame_path
         )
-        if not GEOMETRIC_TRANSFORM_PARAMS:
+        if not geometric_transform:
             print("  几何变换估算失败，将不会对源素材进行特定的裁切/缩放。")
 
     # --- 检查用户提供的颜色LUT文件 ---
     # 路径已被预处理为绝对路径，只需检查文件是否存在
     final_color_lut_path = None
-    if ABS_USER_COLOR_LUT_PATH:
-        if os.path.exists(ABS_USER_COLOR_LUT_PATH):
-            print(f"  将使用颜色校正LUT文件: {ABS_USER_COLOR_LUT_PATH}")
-            final_color_lut_path = ABS_USER_COLOR_LUT_PATH
+    if abs_user_color_lut_path:
+        if os.path.exists(abs_user_color_lut_path):
+            print(f"  将使用颜色校正LUT文件: {abs_user_color_lut_path}")
+            final_color_lut_path = abs_user_color_lut_path
         else:
-            print(f"警告: 用户指定的颜色LUT文件未找到: " f"{ABS_USER_COLOR_LUT_PATH}")
+            print(f"警告: 用户指定的颜色LUT文件未找到: {abs_user_color_lut_path}")
             print("  将跳过颜色LUT的应用。")
 
-    # --- 查找所有要处理的视频文件 (已修正逻辑) ---
-    source_video_files = []
-    if ABS_SOURCE_VIDEO_FOLDER and os.path.isdir(ABS_SOURCE_VIDEO_FOLDER):
-        print(f"\n正在源视频文件夹中搜索视频: {ABS_SOURCE_VIDEO_FOLDER}")
-        for ext in VIDEO_EXTENSIONS:
-            # 使用 recursive=True 在子文件夹中查找
-            pattern = os.path.join(ABS_SOURCE_VIDEO_FOLDER, "**", f"*{ext.lower()}")
-            source_video_files.extend(glob.glob(pattern, recursive=True))
-            # 兼容大写扩展名
-            pattern_upper = os.path.join(
-                ABS_SOURCE_VIDEO_FOLDER, "**", f"*{ext.upper()}"
-            )
-            source_video_files.extend(glob.glob(pattern_upper, recursive=True))
-    elif SOURCE_VIDEO_FOLDER:
-        print(f"警告: 源视频文件夹 '{SOURCE_VIDEO_FOLDER}' 未找到或不是一个目录。")
+    print(f"\n正在源视频文件夹中搜索视频: {abs_source_video_folder}")
+    source_video_files = discover_source_videos(
+        abs_source_video_folder, abs_edited_video_path
+    )
 
     # 最终处理列表 = 编辑后的视频 + 所有源视频 (去重)
-    all_videos_to_process = {os.path.normpath(ABS_EDITED_VIDEO_PATH)}
+    all_videos_to_process = {os.path.normpath(abs_edited_video_path)}
     all_videos_to_process.update([os.path.normpath(p) for p in source_video_files])
 
     # 转换为排序后的列表以保证处理顺序一致
@@ -552,38 +422,33 @@ def main_step1():
         print(f"\n--- 正在处理: {video_file_name_with_ext} ---")
         # 使用 os.path.normpath 确保跨平台路径比较的可靠性
         is_edited = os.path.normpath(video_full_path) == os.path.normpath(
-            ABS_EDITED_VIDEO_PATH
+            abs_edited_video_path
         )
 
         current_geom_transform = None
         current_color_lut = None
         if not is_edited:  # 仅对源素材应用特殊变换
-            current_geom_transform = GEOMETRIC_TRANSFORM_PARAMS
+            current_geom_transform = geometric_transform
             current_color_lut = final_color_lut_path
 
-        process_video_for_frames(
+        success = process_video_for_frames(
             video_path=video_full_path,
             video_name_no_ext=video_name_no_ext,
-            main_output_folder=ABS_OUTPUT_DIR,
+            main_output_folder=abs_output_dir,
             is_edited_video_flag=is_edited,
             final_output_resolution=final_output_resolution,
-            mask_rect_config=MASK_RECT,
+            mask_rect_config=mask_rect,
             geom_transform_to_apply=current_geom_transform,
             color_lut_to_apply=current_color_lut,
         )
+        if not success:
+            raise RuntimeError(f"视频逐帧处理失败: {video_full_path}")
 
     print("\n\n步骤 1 (帧提取与变换) 已完成。")
-    print(f"所有输出的帧位于以下目录的子文件夹中: {ABS_OUTPUT_DIR}")
+    print(f"所有输出的帧位于以下目录的子文件夹中: {abs_output_dir}")
 
 
 if __name__ == "__main__":
+    from settings import load_settings
 
-    try:
-        # Ensure OpenCV Contrib is installed if SIFT is desired.
-        # `pip install opencv-python opencv-contrib-python numpy`
-        main_step1()
-    except Exception as e:
-        print(f"在步骤1执行期间发生严重错误: {e}")
-        import traceback
-
-        traceback.print_exc()
+    main_step1(load_settings("config.toml"))
